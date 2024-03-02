@@ -1,0 +1,208 @@
+---
+title: "Final Project Pt.1 Proposal (with code chunks)"
+author: Mahathi Gandhamaneni
+output: pdf_document
+---
+
+```{r}
+library(tidyverse)
+library(dplyr)
+library(car)
+library(Matrix)
+library(MPV)
+library(glmnet)
+library(rms)
+library(gglasso)
+library(pls)
+library(psych)
+```
+
+```{r}
+# Load the data
+data <- read.csv("bottle.csv")
+```
+```{r}
+# Select relevant variables
+data <- select(data, -Cst_Cnt)
+data1 <- data %>% select(Depthm, T_degC, Salnty)
+data1 %>% summary()
+sum(is.na(data1$Depthm))
+```
+```{r}
+# Remove NA values and select a random 1% sample of data
+data1 <- data1 %>% filter(!is.na(T_degC),
+                          !is.na(Salnty))
+set.seed(8140)
+small_data <- data1 %>% slice_sample(prop=0.01, replace=FALSE)
+
+# Divide the data into test and train sets
+dt = sort(sample(nrow(small_data), nrow(small_data)*.7))
+small_data<-small_data[dt,]
+test<-small_data[-dt,]
+small_data %>% summary()
+# Duplicate the training set for multiple regression
+small_data_mult<-data.frame(small_data)
+
+```
+
+
+```{r}
+# Looking at a summary of the data and correlation between the variables
+summary(small_data)
+cor(small_data)
+
+```
+
+
+```{r}
+# Fitting the simple linear regression model and loading a summary
+model_simp <- lm(T_degC ~ Salnty, data = small_data)
+summary(model_simp) 
+# Fitting the multiple linear regression model and loading a summary
+model_mult <- lm(T_degC ~ Salnty + Depthm, data = small_data_mult)
+summary(model_mult)
+```
+
+```{r}
+# Looking at 95% CIs for coefficients of both models
+confint(model_simp, level=0.95)
+confint(model_mult, level=0.95)
+```
+```{r}
+# Sorting the data. Otherwise plots can look messy
+small_data <- small_data[order(small_data$Salnty),]
+```
+```{r}
+# Running ANOVA on both models and generating their tables
+anova(model_simp)
+anova(model_mult)
+```
+```{r}
+# Plotting residuals vs fitted and normal Q-Q plots for simple linear regression model
+plot(model_simp)
+```
+```{r}
+# Plotting residuals vs fitted and normal Q-Q plots for multiple linear regression model
+plot(model_mult)
+```
+```{r}
+# Finding points with high leverage and large residuals in the simple linear
+# regression model
+high_leverage <- cooks.distance(model_simp) > (4/nrow(small_data))
+large_residuals <- rstudent(model_simp) > 3
+# Removing these points
+small_data <- small_data[!high_leverage & !large_residuals,]
+# Refitting the simple linear regression model
+model_simp<-lm(T_degC ~ Salnty, data = small_data) 
+# Looking at the summary table and plots
+summary(model_simp)
+plot(model_simp)
+```
+```{r}
+# Finding points with high leverage and large residuals in the multiple linear
+# regression model
+high_leverage <- cooks.distance(model_mult) > (4/nrow(small_data_mult))
+large_residuals <- rstudent(model_mult) > 3
+# Removing these points
+small_data_mult <- small_data_mult[!high_leverage & !large_residuals,]
+# Refitting the multiple linear regression model
+model_mult <- lm(T_degC ~ Salnty + Depthm, data = small_data_mult)
+# Looking at the summary table and plots
+summary(model_mult)
+plot(model_mult)
+```
+
+
+```{r}
+# Finding points with high leverage and large residuals in the simple linear
+# regression model
+high_leverage <- cooks.distance(model_simp) > (4/nrow(small_data))
+large_residuals <- rstudent(model_simp) > 3
+# Removing these points
+small_data <- small_data[!high_leverage & !large_residuals,]
+# Refitting the simple linear regression model
+model_simp<-lm(T_degC ~ Salnty, data = small_data)
+# Looking at the summary table and plots
+summary(model_simp)
+plot(model_simp)
+```
+
+```{r}
+library(MASS)
+# Box-cox transformation for the simple linear regression model
+b <- boxcox(model_simp)
+# Exact lambda calculation
+lambda <- b$x[which.max(b$y)]
+# Fitting new model with transformed response
+new_model <- lm(((small_data$T_degC^lambda-1)/lambda) ~ small_data$Salnty)
+# Plots, ANOVA, and summary tables
+qqnorm(new_model$residuals)
+qqline(new_model$residuals)
+plot(new_model)
+anova(new_model)
+summary(new_model)
+```
+```{r}
+library(MASS)
+# Box-cox transformation for the multiple linear regression model
+b <- boxcox(model_mult)
+# Exact lambda calculation
+lambda <- b$x[which.max(b$y)]
+# Fitting new model with transformed response
+new_model_mult <- lm(((small_data_mult$T_degC^lambda-1)/lambda) ~ small_data_mult$Salnty + small_data_mult$Depthm)
+# Plots, ANOVA, and summary tables
+qqnorm(new_model_mult$residuals)
+qqline(new_model_mult$residuals)
+plot(new_model_mult)
+anova(new_model_mult)
+summary(new_model_mult)
+# Looking at VIF values
+install.packages("car")
+library(car)
+vif(new_model_mult)
+```
+```{r}
+# Selecting best variables for the model using BIC
+n <- nrow(small_data_mult)
+sel.var.bic <- step(new_model_mult, trace = 0, k = log(n), direction = "both") 
+select_var_bic<-attr(terms(sel.var.bic), "term.labels")   
+select_var_bic
+```
+```{r}
+# Selecting best variables for the model using AIC
+sel.var.aic <- step(new_model_mult, trace = 0, k = 2, direction = "both") 
+sel.var.aic<-attr(terms(sel.var.aic), "term.labels")   
+sel.var.aic
+```
+```{r}
+# Cross Validation and prediction performance of BIC based selection
+ols.bic <- ols(T_degC ~ Salnty + Depthm, data = small_data_mult, 
+               x=T, y=T, model = T)
+
+# 10 fold cross validation
+bic.cross <- calibrate(ols.bic, method = "crossvalidation", B = 10)
+# Calibration plot
+plot(bic.cross, las = 1, xlab = "Predicted LPSA", main = "Cross-Validation calibration with BIC")
+
+
+# Test Error
+pred.bic <- predict(ols.bic, newdata = test)
+# Prediction error
+pred.error.BIC <- mean((test$T_degC - pred.bic)^2)
+
+# Cross Validation and prediction performance of AIC based selection
+ols.aic <- ols(T_degC ~ Salnty + Depthm, data = small_data_mult, 
+               x=T, y=T, model = T)
+
+# 10 fold cross validation
+aic.cross <- calibrate(ols.aic, method = "crossvalidation", B = 10)
+
+# Calibration plot
+plot(aic.cross, las = 1, xlab = "Predicted LPSA", main = "Cross-Validation calibration with AIC")
+
+
+# Test Error
+pred.aic <- predict(ols.aic, newdata = test)
+# Prediction error
+pred.error.AIC <- mean((test$T_degC - pred.aic)^2)
+```
